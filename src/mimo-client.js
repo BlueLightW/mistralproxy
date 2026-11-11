@@ -2,6 +2,7 @@ import http from "node:http";
 import { upstream, SERVER_AUTH } from "./config.js";
 import { accountPool } from './account-pool.js';
 import crypto from 'node:crypto';
+import { LeChatStreamParser } from './lechat-parser.js';
 import { buildToolsSystemPrompt, extractToolCalls, removeToolCallsFromText, detectFakeToolCalls } from './tool-handler.js';
 
 // Cache de conversationId por API key/usuário
@@ -169,120 +170,15 @@ export async function fetchMimo(response, requestData) {
 
                 if (!res.ok) throw new Error("HTTP " + res.status);
 
-               const reader = res.body.getReader();
+               // No browser (evaluate): apenas repassa bytes crus
+const reader = res.body.getReader();
 const decoder = new TextDecoder();
-let buf = '';
-let sentDone = false;
-let fullText = ''; // Acumula todo o texto para detectar tool calls
-
-let lastSentContent = '';  // ← ADICIONAR
-let sentDoneCount = 0;     // ← ADICIONAR
-
 while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    
-    buf += decoder.decode(value, { stream: true });
-    const lines = buf.split('\n');
-    buf = lines.pop() || '';
-    
-    for (let line of lines) {
-        line = line.trim();
-        if (!line || !line.startsWith('data:')) continue;
-        
-        const dataStr = line.slice(5).trim();
-        if (dataStr === '[DONE]') {
-            if (!sentDone && sentDoneCount < 1) {
-                sentDone = true;
-                sentDoneCount++;
-                await window[funcName]('data: [DONE]\n\n');
-            }
-            break;
-        }
-        
-        try {
-            const j = JSON.parse(dataStr);
-            const content = j.content || '';
-            
-            // FILTRO: Ignora mensagens de erro
-            if (content && (
-                content.includes("I can't answer") ||
-                content.includes("网络中断") ||
-                /^\d+$/.test(content) ||
-                content.length < 3
-            )) {
-                continue;
-            }
-            
-            // Acumula texto para detectar tool calls
-            if (content) {
-                fullText += content;
-                
-                // Verifica se há tool calls completos
-                const toolCallRegex = /<tool_call>\s*<name>(.*?)<\/name>\s*<arguments>(.*?)<\/arguments>\s*<\/tool_call>/gs;
-                const matches = [...content.matchAll(toolCallRegex)];
-                
-                if (matches.length > 0) {
-                    // Envia tool calls no formato OpenAI
-                    for (const match of matches) {
-                        const name = match[1].trim();
-                        const argsStr = match[2].trim();
-                        
-                        await window[funcName]('data: ' + JSON.stringify({
-                            choices: [{
-                                delta: {
-                                    tool_calls: [{
-                                        index: 0,
-                                        id: `call_${Date.now()}`,
-                                        type: 'function',
-                                        function: {
-                                            name: name,
-                                            arguments: argsStr
-                                        }
-                                    }]
-                                }
-                            }]
-                        }) + '\n\n');
-                    }
-                } else {
-                    // DEDUPLICADOR: evita repetir o mesmo texto
-                    // (às vezes o MiMo reenvia o mesmo chunk com offset)
-                    if (content && content.length >= 3) {
-                        if (lastSentContent.endsWith(content) || content === lastSentContent) {
-                            continue;  // Pula chunk duplicado
-                        }
-                        
-                        // Se o novo conteúdo é apenas uma extensão do anterior, pega só o delta
-                        let delta = content;
-                        if (content.includes(lastSentContent.slice(-Math.min(50, lastSentContent.length)))) {
-                            const overlapIdx = lastSentContent.lastIndexOf(content.slice(0, 30));
-                            if (overlapIdx > 0 && overlapIdx + content.length > lastSentContent.length) {
-                                delta = content.slice(-(content.length - (lastSentContent.length - overlapIdx)));
-                            }
-                        }
-                        
-                        // Envia apenas o delta limpo
-                        if (delta && delta.length >= 3 && !/^\d+$/.test(delta)) {
-                            lastSentContent += delta;
-                            await window[funcName]('data: ' + JSON.stringify({
-                                choices: [{ delta: { content: delta } }]
-                            }) + '\n\n');
-                        }
-                    }
-                }
-            }
-            
-            // Envia reasoning separado
-            if (j.reasoningContent) {
-                await window[funcName]('data: ' + JSON.stringify({
-                    choices: [{ delta: { reasoning_content: j.reasoningContent } }]
-                }) + '\n\n');
-            }
-        } catch (e) {
-            // Ignora JSON inválido
-        }
-    }
+    await window[funcName](decoder.decode(value, { stream: true })); // texto BRUTO
 }
+await window[funcName](null);
 
 if (!sentDone) {
     await window[funcName]('data: [DONE]\n\n');
@@ -316,15 +212,32 @@ if (!sentDone) {
         }, 300000);
 
         try {
-            while (true) {
-                if (queue.length === 0) {
-                    await new Promise((r) => { resolver = r; });
-                }
-                if (evalError) throw evalError;
-                const chunk = queue.shift();
-                if (chunk === null) break;
-                response.write(chunk);
-            }
+            const parser = new LeChatStreamParser();
+
+while (true) {
+    if (queue.length === 0) await new Promise(r => { resolver = r; });
+    if (evalError) throw evalError;
+    const raw = queue.shift();
+    if (raw === null) break;
+    
+    for (const evt of parser.feed(raw)) {
+        if (evt.type === 'content') {
+            response.write('data: ' + JSON.stringify({
+                choices: [{ delta: { content: evt.delta } }]
+            }) + '\n\n');
+        } else if (evt.type === 'reasoning') {
+            response.write('data: ' + JSON.stringify({
+                choices: [{ delta: { reasoning_content: evt.delta } }]
+            }) + '\n\n');
+        } else if (evt.type === 'finish') {
+            response.write('data: [DONE]\n\n');
+        }
+    }
+}
+if (!response.writableEnded) {
+    response.write('data: [DONE]\n\n');
+    response.end();
+}
             await evalPromise;
             clearTimeout(streamTimeout);
             response.end();
