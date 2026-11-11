@@ -92,61 +92,79 @@ export async function startMimoInstanceWithPlaywright(account) {
   const context = await chromium.launchPersistentContext(profilePath, { headless: false });
   const page = context.pages()[0] || await context.newPage();
 
-  // Faz login no MiMo Code
-  await page.goto('https://aistudio.xiaomimimo.com');
+  // Faz login no Mistral
+  await page.goto('https://chat.mistral.ai/');
 
-  // Se já logado, pula login
-  if (await page.locator('textarea[placeholder^="Ask me anything"]').isVisible().catch(() => false)) {
+  // Se já logado, pula login (verifica se o campo de input do chat está visível)
+  if (await page.locator('div.ProseMirror[contenteditable="true"]').first().isVisible().catch(() => false)) {
     return { sessionId, browser: context, context, page };
   }
-  const tryNow = page.locator('button:has-text("Try Now")');
-  if (await tryNow.isVisible().catch(() => false)) {
-    await tryNow.click();
+  
+  // 1. Clica no botão "Aceitar e continuar" (termos)
+  const acceptTermsBtn = page.locator('button:has-text("Aceitar e continuar")');
+  if (await acceptTermsBtn.isVisible().catch(() => false)) {
+    await acceptTermsBtn.click();
+    await page.waitForTimeout(500);
   }
 
-  // Fecha popup inicial
-  const closePopup = page.locator('svg.h-5.w-5.text-\\[var\\(--mimo-grey-06\\)\\]');
-  if (await closePopup.isVisible().catch(() => false)) {
-    await closePopup.click();
-  }
-  const signInBtn = page.locator('button.inline-flex.relative.justify-center:has-text("Sign in")');
+  // 2. Clica no botão "Entrar"
+  const signInBtn = page.locator('button:has-text("Entrar")');
   if (await signInBtn.isVisible().catch(() => false)) {
     await signInBtn.click();
+    await page.waitForTimeout(1000);
   }
 
-  // Preenche credenciais
-  const accountInput = page.locator('input[name="account"]');
-  if (await accountInput.isVisible().catch(() => false)) {
-    await accountInput.fill(account.email);
+  // 3. Preenche email
+  const emailInput = page.locator('input[name="email"], input[type="email"][placeholder="you@example.com"]');
+  if (await emailInput.isVisible().catch(() => false)) {
+    await emailInput.fill(account.email);
+    await page.waitForTimeout(500);
   }
-  const passwordInput = page.locator('input[name="password"]');
+
+  // 4. Clica no botão "Continuar" abaixo do email
+  const continueEmailBtn = page.locator('button[type="submit"]:has-text("Continuar")');
+  if (await continueEmailBtn.isVisible().catch(() => false)) {
+    await continueEmailBtn.click();
+    await page.waitForTimeout(1500);
+  }
+
+  // 5. Preenche senha
+  const passwordInput = page.locator('input[name="password"], input[type="password"][autocomplete="current-password"]');
   if (await passwordInput.isVisible().catch(() => false)) {
     await passwordInput.fill(account.password);
+    await page.waitForTimeout(500);
   }
 
-  // Aceita termos se aparecer
-  const agreeBtn = page.locator('button:has-text("Agree")');
-  if (await agreeBtn.isVisible().catch(() => false)) {
-    await agreeBtn.click();
+  // 6. Clica no botão "Continuar com senha"
+  const continuePasswordBtn = page.locator('button[type="submit"]:has-text("Continuar com senha")');
+  if (await continuePasswordBtn.isVisible().catch(() => false)) {
+    await continuePasswordBtn.click();
   }
 
-  // Marca checkbox de termos (se existir)
-  const checkbox = page.locator('input[type="checkbox"].ant-checkbox-input');
-  if (await checkbox.isVisible().catch(() => false)) {
-    await checkbox.check();
-  }
+  // 7. Aguarda o campo de chat aparecer (verificação de sucesso)
+  await page.waitForSelector('div.ProseMirror[contenteditable="true"]', { timeout: 0 });
 
-  // Submete login
-  const submitBtn = page.locator('button[type="submit"]:has-text("Sign in")');
-  if (await submitBtn.isVisible().catch(() => false)) {
-    await submitBtn.click();
-  }
+  // Extrair tokens de autenticação do localStorage (Mistral pode usar tokens em vez de apenas cookies)
+  const authData = await page.evaluate(() => {
+    const tokens = {};
+    // Verifica localStorage por tokens de auth
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && (key.includes('auth') || key.includes('token') || key.includes('session') || key.includes('access'))) {
+        tokens[key] = localStorage.getItem(key);
+      }
+    }
+    // Também verifica sessionStorage
+    for (let i = 0; i < sessionStorage.length; i++) {
+      const key = sessionStorage.key(i);
+      if (key && (key.includes('auth') || key.includes('token') || key.includes('session') || key.includes('access'))) {
+        tokens[key] = sessionStorage.getItem(key);
+      }
+    }
+    return tokens;
+  });
 
-  // Aguarda código por email e botão do chat (login manual)
-  await page.waitForSelector('textarea[placeholder^="Ask me anything"]', { timeout: 0 });
-
-  // Extrair cookies ou token de autenticação
   const cookies = await context.cookies();
 
-  return { sessionId, browser: context, context, page };
+  return { sessionId, browser: context, context, page, authData, cookies };
 }

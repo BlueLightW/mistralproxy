@@ -64,6 +64,22 @@ export async function fetchMimo(response, requestData) {
     if (!account) throw new Error('Nenhuma conta cadastrada');
     
     const session = await accountManager.getOrCreateSession(account);
+    
+    // Valida se a sessão ainda está logada (verifica se o campo de chat está visível)
+    const isLoggedIn = await session.page.evaluate(() => {
+        return document.querySelector('div.ProseMirror[contenteditable="true"]') !== null;
+    }).catch(() => false);
+    
+    if (!isLoggedIn) {
+        console.log('[MiMo] Sessão expirada, reiniciando login...');
+        // Força recriação da sessão
+        accountManager.releaseSession(session.sessionId);
+        const newSession = await accountManager.getOrCreateSession(account);
+        session.page = newSession.page;
+        session.browser = newSession.browser;
+        session.context = newSession.context;
+    }
+    
     const tools = requestData.tools || null;
     const toolChoice = requestData.tool_choice || 'auto';
     
@@ -98,15 +114,13 @@ export async function fetchMimo(response, requestData) {
             return Promise.resolve();
         });
 
-        if (!session.page.url().includes("aistudio.xiaomimimo.com")) {
-            await session.page.goto("https://aistudio.xiaomimimo.com", { waitUntil: "domcontentloaded" });
+        if (!session.page.url().includes("chat.mistral.ai")) {
+            await session.page.goto("https://chat.mistral.ai/", { waitUntil: "domcontentloaded" });
             await session.page.waitForTimeout(1000);
         }
 
         const evalPromise = session.page.evaluate(async ({ body, funcName, fullQuery, conversationId }) => {
             try {
-                let ph = (document.cookie.match(/xiaomichatbot_ph="?([^";]+)"?/) || [])[1] || "";
-                
                 const controller = new AbortController();
                 const timeout = setTimeout(() => controller.abort(), 120000);
                 
@@ -114,34 +128,42 @@ export async function fetchMimo(response, requestData) {
                 console.log('[MiMo Request] Query length:', fullQuery.length);
                 console.log('[MiMo Request] ConversationId:', conversationId);
                 
-                const res = await fetch('/open-apis/react/chat?xiaomichatbot_ph=' + encodeURIComponent(ph), {
+                // Gera messageId único para cada requisição
+                const messageId = crypto.randomUUID();
+                
+                const res = await fetch('https://chat.mistral.ai/api/chat', {
                     signal: controller.signal,
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'x-timeZone': Intl.DateTimeFormat().resolvedOptions().timeZone,
                         'Accept': 'text/event-stream'
                     },
                     body: JSON.stringify({
-                        msgId: self.crypto.randomUUID(),
-                        conversationId: conversationId,
-                        query: fullQuery,
-                        isEditedQuery: false,
-                        modelConfig: {
-                            enableThinking: false,
-                            webSearchStatus: 'disabled',
-                            model: (() => {
-                                const m = (body.model || "").toLowerCase();
-                                if (m.includes("flash")) return "mimo-v2.6-flash";
-                                if (m.includes("v2.5-pro")) return "mimo-v2.5-pro";
-                                if (m.includes("v2.5")) return "mimo-v2.5";
-                                if (m.includes("ultraspeed")) return "mimo-v2.6-pro-ultraspeed";
-                                return "mimo-v2.6-pro";
-                            })(),
-                            temperature: body.temperature ?? 0.8,
-                            topP: body.top_p ?? 0.95,
+                        "chatId": "8457c662-ad03-42f5-8309-69f3e3611583",
+                        "mode": "append",
+                        "messageInput": [{
+                            "type": "text",
+                            "text": fullQuery
+                        }],
+                        "messageFiles": [],
+                        "messageId": messageId,
+                        "features": ["beta-code-interpreter", "beta-imagegen", "beta-trampoline", "beta-websearch", "agentic-harness"],
+                        "libraries": [],
+                        "integrations": [],
+                        "modelConfig": {
+                            "model_alias": "glm-5-latest-short",
+                            "reasoning_effort": "low"
                         },
-                        multiMedias: [],
+                        "disabledFeatures": [],
+                        "reviewComments": [],
+                        "preventFeaturesAndIntegrationsPersistence": false,
+                        "transcriptionsMetadata": [],
+                        "clientPromptData": {
+                            "currentDate": "2026-11-10",
+                            "userTimezone": "T-03:00 (America/Sao_Paulo)"
+                        },
+                        "stableAnonymousIdentifier": "8mka7l",
+                        "supportedTaskCallbacks": ["ask_user_question", "ask_user_confirmation", "ask_enable_skill", "enable_connector", "reconnect_connector", "ask_retry_or_continue_rate_limit", "collect_workflow_input", "delegate_workflow_execution"]
                     }),
                 });
 
@@ -320,33 +342,38 @@ if (!sentDone) {
     }
 
     // --- NÃO STREAMING ---
-    const result = await session.page.evaluate(async ({ body, fullQuery, conversationId }) => {
+    const messageId = crypto.randomUUID();
+    const result = await session.page.evaluate(async ({ body, fullQuery, conversationId, messageId }) => {
         try {
-            let ph = (document.cookie.match(/xiaomichatbot_ph="?([^";]+)"?/) || [])[1] || "";
-            
-            const res = await fetch('/open-apis/react/chat?xiaomichatbot_ph=' + encodeURIComponent(ph), {
+            const res = await fetch('https://chat.mistral.ai/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    msgId: self.crypto.randomUUID(),
-                    conversationId: conversationId,
-                    query: fullQuery,
-                    isEditedQuery: false,
-                    modelConfig: {
-                        enableThinking: false,
-                        webSearchStatus: 'disabled',
-                        model: (() => {
-                            const m = (body.model || "").toLowerCase();
-                            if (m.includes("flash")) return "mimo-v2.6-flash";
-                            if (m.includes("v2.5-pro")) return "mimo-v2.5-pro";
-                            if (m.includes("v2.5")) return "mimo-v2.5";
-                            if (m.includes("ultraspeed")) return "mimo-v2.6-pro-ultraspeed";
-                            return "mimo-v2.6-pro";
-                        })(),
-                        temperature: body.temperature ?? 0.8,
-                        topP: body.top_p ?? 0.95,
+                    "chatId": "8457c662-ad03-42f5-8309-69f3e3611583",
+                    "mode": "append",
+                    "messageInput": [{
+                        "type": "text",
+                        "text": fullQuery
+                    }],
+                    "messageFiles": [],
+                    "messageId": messageId,
+                    "features": ["beta-code-interpreter", "beta-imagegen", "beta-trampoline", "beta-websearch", "agentic-harness"],
+                    "libraries": [],
+                    "integrations": [],
+                    "modelConfig": {
+                        "model_alias": "glm-5-latest-short",
+                        "reasoning_effort": "low"
                     },
-                    multiMedias: [],
+                    "disabledFeatures": [],
+                    "reviewComments": [],
+                    "preventFeaturesAndIntegrationsPersistence": false,
+                    "transcriptionsMetadata": [],
+                    "clientPromptData": {
+                        "currentDate": "2026-11-10",
+                        "userTimezone": "T-03:00 (America/Sao_Paulo)"
+                    },
+                    "stableAnonymousIdentifier": "8mka7l",
+                    "supportedTaskCallbacks": ["ask_user_question", "ask_user_confirmation", "ask_enable_skill", "enable_connector", "reconnect_connector", "ask_retry_or_continue_rate_limit", "collect_workflow_input", "delegate_workflow_execution"]
                 }),
             });
             
@@ -373,7 +400,7 @@ if (!sentDone) {
         } catch (e) {
             return { status: 0, text: e.message };
         }
-    }, { body: requestData, fullQuery, conversationId });
+    }, { body: requestData, fullQuery, conversationId, messageId });
 
     // Validação de erro (Node.js, fora do evaluate)
     if (result.status < 200 || result.status >= 300) {

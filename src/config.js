@@ -70,11 +70,7 @@ export const SERVER_AUTH = SERVER_PASSWORD
   : "";
 
 export const mimoModels = [
-  "mimo-v2.6-pro",
-  "mimo-v2.6-flash",
-  "mimo-v2.5-pro",
-  "mimo-v2.5",
-  "mimo-v2.6-pro-ultraspeed",
+  "glm-5-latest-short",
 ];
 
 
