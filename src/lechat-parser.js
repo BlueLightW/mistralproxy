@@ -52,6 +52,34 @@ export class LeChatStreamParser {
                 this.sentReasoning = reasoning.length;
             }
             if (this.finished) events.push({ type: 'finish' });
+            if (evt.type === 'content') {
+    // Acumula texto para detectar tool calls
+    this.accumulatedText += evt.delta;
+    
+    // Verifica se há tool calls completos
+    const newToolCalls = extractToolCallsFromText(this.accumulatedText);
+    if (newToolCalls.length > this.lastToolCallCount) {
+        // Envia apenas os novos tool calls
+        const newCalls = newToolCalls.slice(this.lastToolCallCount);
+        for (const call of newCalls) {
+            events.push({
+                type: 'tool_call',
+                data: call
+            });
+        }
+        this.lastToolCallCount = newToolCalls.length;
+    }
+}
+
+if (evt.type === 'finish') {
+    // Remove tool calls do texto final antes de enviar
+    const cleanText = removeToolCallsFromText(this.accumulatedText);
+    events.push({ 
+        type: 'final_content', 
+        text: cleanText,
+        tool_calls: extractToolCallsFromText(this.accumulatedText)
+    });
+}
         }
         return events;
     }

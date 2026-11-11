@@ -3,7 +3,13 @@ import { upstream, SERVER_AUTH } from "./config.js";
 import { accountPool } from './account-pool.js';
 import crypto from 'node:crypto';
 import { LeChatStreamParser } from './lechat-parser.js';
-import { buildToolsSystemPrompt, extractToolCalls, removeToolCallsFromText, detectFakeToolCalls } from './tool-handler.js';
+import { 
+    injectToolsIntoPrompt, 
+    extractToolCallsFromText, 
+    removeToolCallsFromText,
+    detectFakeToolCalls
+} from './mistral-tool-handler.js';
+// import { buildToolsSystemPrompt, extractToolCalls, removeToolCallsFromText, detectFakeToolCalls } from './tool-handler.js';
 
 // Cache de conversationId por API key/usuário
 const conversationCache = new Map();
@@ -128,7 +134,11 @@ export async function fetchMimo(response, requestData) {
                 console.log('[MiMo Request] Model:', body.model);
                 console.log('[MiMo Request] Query length:', fullQuery.length);
                 console.log('[MiMo Request] ConversationId:', conversationId);
-                
+                const messagesWithTools = injectToolsIntoPrompt(
+                    body.messages, 
+                    body.tools, 
+                    body.tool_choice
+                );
                 // Gera messageId único para cada requisição
                 const messageId = crypto.randomUUID();
                 
@@ -140,6 +150,7 @@ export async function fetchMimo(response, requestData) {
                         'Accept': 'text/event-stream'
                     },
                     body: JSON.stringify({
+                        "messages": messagesWithTools,
                         "chatId": "8457c662-ad03-42f5-8309-69f3e3611583",
                         "mode": "append",
                         "messageInput": [{
@@ -221,18 +232,30 @@ while (true) {
     if (raw === null) break;
     
     for (const evt of parser.feed(raw)) {
-        if (evt.type === 'content') {
-            response.write('data: ' + JSON.stringify({
-                choices: [{ delta: { content: evt.delta } }]
-            }) + '\n\n');
-        } else if (evt.type === 'reasoning') {
-            response.write('data: ' + JSON.stringify({
-                choices: [{ delta: { reasoning_content: evt.delta } }]
-            }) + '\n\n');
-        } else if (evt.type === 'finish') {
-            response.write('data: [DONE]\n\n');
-        }
-    }
+                if (evt.type === 'content' && !hasToolCalls) {
+                    response.write('data: ' + JSON.stringify({
+                        choices: [{ delta: { content: evt.delta } }]
+                    }) + '\n\n');
+                } else if (evt.type === 'reasoning') {
+                    response.write('data: ' + JSON.stringify({
+                        choices: [{ delta: { reasoning_content: evt.delta } }]
+                    }) + '\n\n');
+                } else if (evt.type === 'tool_call') {
+                    hasToolCalls = true;
+                    response.write('data: ' + JSON.stringify({
+                        choices: [{ delta: { tool_calls: [evt.data] } }]
+                    }) + '\n\n');
+                } else if (evt.type === 'final_content') {
+                    // Só envia texto final se não houve tool calls
+                    if (!hasToolCalls && evt.text) {
+                        response.write('data: ' + JSON.stringify({
+                            choices: [{ delta: { content: evt.text } }]
+                        }) + '\n\n');
+                    }
+                } else if (evt.type === 'finish') {
+                    response.write('data: [DONE]\n\n');
+                }
+            }
 }
 if (!response.writableEnded) {
     response.write('data: [DONE]\n\n');
@@ -319,62 +342,60 @@ if (!response.writableEnded) {
     if (result.status < 200 || result.status >= 300) {
         throw new Error('MiMo retornou erro: ' + result.text);
     }
+// Após receber o texto completo do Mistral (não-streaming):
+const fullText = result.text;
 
-    // Extrai tool calls do texto completo
-    const toolCalls = extractToolCalls(result.text);
-    const cleanText = removeToolCallsFromText(result.text);
+// Extrai tool calls
+const toolCalls = extractToolCallsFromText(fullText);
+const cleanText = removeToolCallsFromText(fullText);
 
-    // LOG: mostra o texto bruto para debug
-    console.log('[MiMo Debug] Raw text length:', result.text.length);
-    console.log('[MiMo Debug] Tool calls found:', toolCalls.length);
-    console.log('[MiMo Debug] Raw snippet:', result.text.substring(0, 500));
+console.log('[Mistral] Raw text length:', fullText.length);
+console.log('[Mistral] Tool calls found:', toolCalls.length);
 
-    // Detecta "fake tool calls" - modelo falando sobre tools sem chamar
-    const fakeDetection = detectFakeToolCalls(result.text, requestData.tools);
-    if (fakeDetection.fake) {
-        console.warn('[MiMo] ⚠️', fakeDetection.hint);
-    }
+// Detecta "fake tool calls"
+const fakeDetection = detectFakeToolCalls(fullText, requestData.tools);
+if (fakeDetection.fake) {
+    console.warn('[Mistral] ⚠️', fakeDetection.hint);
+}
 
-    // Se há tool calls, retorna no formato OpenAI
-    if (toolCalls.length > 0) {
-        return {
-            choices: [{
-                message: {
-                    role: 'assistant',
-                    content: cleanText || null,
-                    tool_calls: toolCalls
-                },
-                finish_reason: 'tool_calls'
-            }]
-        };
-    }
-
-    // Se o modelo mencionou tools mas não chamou, avisa o cliente
-    if (fakeDetection.fake && requestData.tools && requestData.tools.length > 0) {
-        const hint = `\n\n⚠️ [Proxy] O modelo MiMo mencionou as tools (${fakeDetection.mentionedTools.join(', ')}) em texto natural, mas não emitiu chamadas estruturadas. Isso é uma limitação da API web do MiMo (aistudio.xiaomimimo.com) que não suporta tool calling nativo. Considere usar um modelo local (llama.cpp) ou API oficial (platform.xiaomimimo.com) para tarefas que requerem ferramentas.`;
-        return {
-            choices: [{
-                message: {
-                    role: 'assistant',
-                    content: cleanText + hint
-                },
-                finish_reason: 'stop'
-            }]
-        };
-    }
-
-    // Senão, retorna como texto normal
-    return { 
-        choices: [{ 
-            message: { 
-                role: 'assistant', 
-                content: cleanText 
+// Retorna no formato OpenAI
+if (toolCalls.length > 0) {
+    return {
+        choices: [{
+            message: {
+                role: 'assistant',
+                content: cleanText || null,
+                tool_calls: toolCalls
             },
-            finish_reason: 'stop'
-        }] 
+            finish_reason: 'tool_calls'
+        }]
     };
 }
 
+// Se mencionou tools mas não chamou, adiciona aviso
+if (fakeDetection.fake && requestData.tools?.length > 0) {
+    const hint = `\n\n---\n\n⚠️ **Nota**: O Mistral (via Le Chat) NÃO suporta tool calls nativos via API web. Para tarefas que requerem acesso a arquivos ou execução de comandos, considere usar um modelo local (llama.cpp) ou a API oficial da Mistral.`;
+    return {
+        choices: [{
+            message: {
+                role: 'assistant',
+                content: cleanText + hint
+            },
+            finish_reason: 'stop'
+        }]
+    };
+}
+
+// Caso normal
+return {
+    choices: [{
+        message: {
+            role: 'assistant',
+            content: cleanText
+        },
+        finish_reason: 'stop'
+    }]
+};}
 export const agent = new http.Agent({
     keepAlive: true,
     keepAliveMsecs: 10000,
