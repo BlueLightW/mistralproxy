@@ -103,7 +103,7 @@ export async function fetchMimo(response, requestData) {
     
     // Usa conversationId persistente baseado no model + timestamp (para manter contexto)
     
-    if (requestData.stream) {
+        if (requestData.stream) {
         response.writeHead(200, {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
@@ -113,7 +113,7 @@ export async function fetchMimo(response, requestData) {
 
         let queue = [];
         let resolver = null;
-        
+
         const funcName = `__sendChunk_${Date.now()}_${Math.random().toString(36).slice(2)}`;
         await session.page.exposeFunction(funcName, (chunk) => {
             queue.push(chunk);
@@ -126,22 +126,36 @@ export async function fetchMimo(response, requestData) {
             await session.page.waitForTimeout(1000);
         }
 
-        const evalPromise = session.page.evaluate(async ({ body, funcName, fullQuery, conversationId }) => {
+        // Payload montado no NODE (browser só faz fetch e repassa bytes crus)
+        const payload = {
+            chatId: process.env.MISTRAL_CHAT_ID || conversationId,
+            mode: "append",
+            messageInput: [{ type: "text", text: fullQuery }],
+            messageFiles: [],
+            messageId: crypto.randomUUID(),
+            features: ["beta-code-interpreter", "beta-imagegen", "beta-trampoline", "beta-websearch", "agentic-harness"],
+            libraries: [],
+            integrations: [],
+            modelConfig: { model_alias: "glm-5-latest-short", reasoning_effort: "low" },
+            disabledFeatures: [],
+            reviewComments: [],
+            preventFeaturesAndIntegrationsPersistence: false,
+            transcriptionsMetadata: [],
+            clientPromptData: {
+                currentDate: new Date().toISOString().slice(0, 10),
+                userTimezone: "T-03:00 (America/Sao_Paulo)"
+            },
+            stableAnonymousIdentifier: "8mka7l",
+            supportedTaskCallbacks: ["ask_user_question", "ask_user_confirmation", "ask_enable_skill", "enable_connector", "reconnect_connector", "ask_retry_or_continue_rate_limit", "collect_workflow_input", "delegate_workflow_execution"]
+        };
+
+        const evalPromise = session.page.evaluate(async ({ payload, funcName }) => {
+            // Alias seguro (evita corrupção de colchetes ao copiar código)
+            const sendChunk = globalThis[funcName];
             try {
                 const controller = new AbortController();
                 const timeout = setTimeout(() => controller.abort(), 120000);
-                
-                console.log('[MiMo Request] Model:', body.model);
-                console.log('[MiMo Request] Query length:', fullQuery.length);
-                console.log('[MiMo Request] ConversationId:', conversationId);
-                const messagesWithTools = injectToolsIntoPrompt(
-                    body.messages, 
-                    body.tools, 
-                    body.tool_choice
-                );
-                // Gera messageId único para cada requisição
-                const messageId = crypto.randomUUID();
-                
+
                 const res = await fetch('https://chat.mistral.ai/api/chat', {
                     signal: controller.signal,
                     method: 'POST',
@@ -149,68 +163,34 @@ export async function fetchMimo(response, requestData) {
                         'Content-Type': 'application/json',
                         'Accept': 'text/event-stream'
                     },
-                    body: JSON.stringify({
-                        "messages": messagesWithTools,
-                        "chatId": "8457c662-ad03-42f5-8309-69f3e3611583",
-                        "mode": "append",
-                        "messageInput": [{
-                            "type": "text",
-                            "text": fullQuery
-                        }],
-                        "messageFiles": [],
-                        "messageId": messageId,
-                        "features": ["beta-code-interpreter", "beta-imagegen", "beta-trampoline", "beta-websearch", "agentic-harness"],
-                        "libraries": [],
-                        "integrations": [],
-                        "modelConfig": {
-                            "model_alias": "glm-5-latest-short",
-                            "reasoning_effort": "low"
-                        },
-                        "disabledFeatures": [],
-                        "reviewComments": [],
-                        "preventFeaturesAndIntegrationsPersistence": false,
-                        "transcriptionsMetadata": [],
-                        "clientPromptData": {
-                            "currentDate": "2026-11-10",
-                            "userTimezone": "T-03:00 (America/Sao_Paulo)"
-                        },
-                        "stableAnonymousIdentifier": "8mka7l",
-                        "supportedTaskCallbacks": ["ask_user_question", "ask_user_confirmation", "ask_enable_skill", "enable_connector", "reconnect_connector", "ask_retry_or_continue_rate_limit", "collect_workflow_input", "delegate_workflow_execution"]
-                    }),
+                    body: JSON.stringify(payload),
                 });
 
-                if (!res.ok) throw new Error("HTTP " + res.status);
+                if (!res.ok) {
+                    const errText = await res.text();
+                    throw new Error('HTTP ' + res.status + ' ' + errText.slice(0, 300));
+                }
 
-               // No browser (evaluate): apenas repassa bytes crus
-const reader = res.body.getReader();
-const decoder = new TextDecoder();
-while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    await window[funcName](decoder.decode(value, { stream: true })); // texto BRUTO
-}
-await window[funcName](null);
-
-if (!sentDone) {
-    await window[funcName]('data: [DONE]\n\n');
-}
-                
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    sendChunk(decoder.decode(value, { stream: true })); // RAW, sem parse
+                }
                 clearTimeout(timeout);
-                await window[funcName](null);
+                sendChunk(null);
             } catch (e) {
-                console.error('[MiMo Error]', e.message);
-                await window[funcName]('data: ' + JSON.stringify({
-                    error: { message: e.message, type: 'proxy_error' }
-                }) + '\n\n');
-                await window[funcName](null);
+                sendChunk('ERROR:' + e.message);
+                sendChunk(null);
             }
-        }, { body: requestData, funcName, fullQuery, conversationId });
+        }, { payload, funcName });
 
         let evalError = null;
-        evalPromise.catch(e => { 
-            evalError = e; 
+        evalPromise.catch(e => {
+            evalError = e;
             console.error('[Node] Browser evaluate error:', e.message);
-            if (resolver) resolver(); 
+            if (resolver) resolver();
         });
 
         const streamTimeout = setTimeout(() => {
@@ -222,45 +202,38 @@ if (!sentDone) {
             }
         }, 300000);
 
-        try {
-            const parser = new LeChatStreamParser();
+        // Parser tRPC/JSON Patch do Le Chat (lado Node)
+        const parser = new LeChatStreamParser();
+        let finished = false;
 
-while (true) {
-    if (queue.length === 0) await new Promise(r => { resolver = r; });
-    if (evalError) throw evalError;
-    const raw = queue.shift();
-    if (raw === null) break;
-    
-    for (const evt of parser.feed(raw)) {
-                if (evt.type === 'content' && !hasToolCalls) {
-                    response.write('data: ' + JSON.stringify({
-                        choices: [{ delta: { content: evt.delta } }]
-                    }) + '\n\n');
-                } else if (evt.type === 'reasoning') {
-                    response.write('data: ' + JSON.stringify({
-                        choices: [{ delta: { reasoning_content: evt.delta } }]
-                    }) + '\n\n');
-                } else if (evt.type === 'tool_call') {
-                    hasToolCalls = true;
-                    response.write('data: ' + JSON.stringify({
-                        choices: [{ delta: { tool_calls: [evt.data] } }]
-                    }) + '\n\n');
-                } else if (evt.type === 'final_content') {
-                    // Só envia texto final se não houve tool calls
-                    if (!hasToolCalls && evt.text) {
+        try {
+            while (true) {
+                if (queue.length === 0) {
+                    await new Promise((r) => { resolver = r; });
+                }
+                if (evalError) throw evalError;
+                const raw = queue.shift();
+                if (raw === null) break;
+                if (typeof raw === 'string' && raw.startsWith('ERROR:')) {
+                    throw new Error(raw.slice(6));
+                }
+
+                for (const evt of parser.feed(raw)) {
+                    if (evt.type === 'content') {
                         response.write('data: ' + JSON.stringify({
-                            choices: [{ delta: { content: evt.text } }]
+                            choices: [{ delta: { content: evt.delta } }]
                         }) + '\n\n');
+                    } else if (evt.type === 'reasoning') {
+                        response.write('data: ' + JSON.stringify({
+                            choices: [{ delta: { reasoning_content: evt.delta } }]
+                        }) + '\n\n');
+                    } else if (evt.type === 'finish') {
+                        finished = true;
+                        response.write('data: [DONE]\n\n');
                     }
-                } else if (evt.type === 'finish') {
-                    response.write('data: [DONE]\n\n');
                 }
             }
-}
-if (!response.writableEnded) {
-    response.write('data: [DONE]\n\n');
-    response.end();
-}
+            if (!finished) response.write('data: [DONE]\n\n');
             await evalPromise;
             clearTimeout(streamTimeout);
             response.end();
