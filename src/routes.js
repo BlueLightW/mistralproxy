@@ -10,7 +10,7 @@ import {
 } from './config.js'
 import { config } from './config.js'
 const WATCHDOG_MS = config.watchdogMs
-import { serverReq, openMiMoEvents, agent } from './mimo-client.js'
+import { serverReq, openMiMoEvents, agent } from './http-utils.js'
 import { isAuthorized, readBody, deny, bad } from './auth.js'
 import {
   openAICompletion,
