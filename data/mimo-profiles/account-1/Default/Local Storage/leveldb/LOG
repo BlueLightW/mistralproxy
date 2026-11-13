@@ -1,3 +1,21 @@
-2026/11/08-17:49:26.726 6388 Reusing MANIFEST F:\mimo-code-proxy-main\mimo-code-proxy-main\data\mimo-profiles\account-1\Default\Local Storage\leveldb/MANIFEST-000001
-2026/11/08-17:49:26.735 6388 Recovering log #3
-2026/11/08-17:49:26.738 6388 Reusing old log F:\mimo-code-proxy-main\mimo-code-proxy-main\data\mimo-profiles\account-1\Default\Local Storage\leveldb/000003.log 
+2026/11/12-09:48:51.940 1c44 Reusing MANIFEST F:\mimo-code-proxy-main\mistral-proxy\data\mimo-profiles\account-1\Default\Local Storage\leveldb/MANIFEST-000001
+2026/11/12-09:48:51.950 1c44 Recovering log #22
+2026/11/12-09:48:51.953 1c44 Reusing old log F:\mimo-code-proxy-main\mistral-proxy\data\mimo-profiles\account-1\Default\Local Storage\leveldb/000022.log 
+2026/11/12-10:04:54.927 46b8 Level-0 table #25: started
+2026/11/12-10:04:54.938 46b8 Level-0 table #25: 16886 bytes OK
+2026/11/12-10:04:54.940 46b8 Delete type=0 #22
+2026/11/12-10:37:54.932 46b8 Level-0 table #27: started
+2026/11/12-10:37:54.942 46b8 Level-0 table #27: 17931 bytes OK
+2026/11/12-10:37:54.944 46b8 Delete type=0 #24
+2026/11/12-11:10:54.932 46b8 Level-0 table #29: started
+2026/11/12-11:10:54.945 46b8 Level-0 table #29: 17934 bytes OK
+2026/11/12-11:10:54.947 46b8 Delete type=0 #26
+2026/11/12-11:10:54.947 46b8 Compacting 4@0 + 1@1 files
+2026/11/12-11:10:54.962 46b8 Generated table #30@0: 10 keys, 2053 bytes
+2026/11/12-11:10:54.962 46b8 Compacted 4@0 + 1@1 files => 2053 bytes
+2026/11/12-11:10:54.963 46b8 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/11/12-11:10:54.964 46b8 Delete type=2 #19
+2026/11/12-11:10:54.964 46b8 Delete type=2 #21
+2026/11/12-11:10:54.964 46b8 Delete type=2 #25
+2026/11/12-11:10:54.964 46b8 Delete type=2 #27
+2026/11/12-11:10:54.964 46b8 Delete type=2 #29
